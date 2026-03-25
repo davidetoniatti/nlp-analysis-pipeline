@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  ai_service:
+    build: ./nlp_service
+    ports:
+      - "8080:8080"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+
+  backend:
+    build: ./backend
+    environment:
+      - INFERENCE_URL=http://ai_service:8080/analyze
+    volumes:
+      - ./test_data.json:/app/test_data.json:ro

@@ -1,0 +1,52 @@
+[
+  {
+    "ID": "87cb20d9-02fd-4f18-951a-eaa7c1ce538f",
+    "SourceID": "source-web",
+    "Text": "Fast delivery. The build quality is fantastic."
+  },
+  {
+    "ID": "8a383af1-e93f-4f24-a14f-5580816f09e9",
+    "SourceID": "source-app",
+    "Text": "Il sistema va in crash continuamente. Inaccettabile."
+  },
+  {
+    "ID": "616b40d9-706b-48bd-8f37-5a03bbdbb7db",
+    "SourceID": "source-web",
+    "Text": "La qualit\u00e0 \u00e8 eccellente e l'interfaccia utente \u00e8 molto intuitiva."
+  },
+  {
+    "ID": "1df2113e-337e-4cd6-a55c-d444ac04b671",
+    "SourceID": "source-app",
+    "Text": "Fast delivery. The build quality is fantastic."
+  },
+  {
+    "ID": "42555dc4-4639-4637-8aff-3d4b44ae5747",
+    "SourceID": "source-app",
+    "Text": "Ottimo prodotto, spedizione velocissima."
+  },
+  {
+    "ID": "027ca28f-a1a9-42cf-8aed-e5710ced3a91",
+    "SourceID": "source-app",
+    "Text": "Terrible customer service. I want a refund immediately."
+  },
+  {
+    "ID": "d92c5127-594f-4c06-82f1-cf1c936be276",
+    "SourceID": "source-app",
+    "Text": "Il sistema va in crash continuamente. Inaccettabile."
+  },
+  {
+    "ID": "c91e5832-b6f9-4796-bd7a-64102b40792a",
+    "SourceID": "source-email",
+    "Text": "Fast delivery. The build quality is fantastic."
+  },
+  {
+    "ID": "fbf73db2-023c-4e64-a0d3-24008b1ea10c",
+    "SourceID": "source-email",
+    "Text": "Il sistema va in crash continuamente. Inaccettabile."
+  },
+  {
+    "ID": "2251d4df-ccfe-4af9-af75-592fc33eb591",
+    "SourceID": "source-email",
+    "Text": "Highly recommend this service. It works exactly as described."
+  }
+]
