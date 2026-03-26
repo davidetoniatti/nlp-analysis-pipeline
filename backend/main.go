@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 )
@@ -40,6 +41,25 @@ func loadMockData(filename string) ([]Message, error) {
 	return messages, nil
 }
 
+func resolveMockDataPath() string {
+	if envPath := os.Getenv("MOCK_DATA_FILE"); envPath != "" {
+		return envPath
+	}
+
+	candidates := []string{
+		"test_data.json",
+		filepath.Join("..", "test_data.json"),
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	return "test_data.json"
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -51,14 +71,18 @@ func main() {
 		cfg.InferenceURL = envURL
 	}
 
+	dataFile := resolveMockDataPath()
+
 	logger.Info(
 		"avvio sistema",
 		"inference_url", cfg.InferenceURL,
 		"workers", cfg.NumWorkers,
 		"batch_size", cfg.BatchSize,
+		"inference_batch_size", cfg.InferenceBatchSize,
+		"data_file", dataFile,
 	)
 
-	messages, err := loadMockData("test_data.json")
+	messages, err := loadMockData(dataFile)
 	if err != nil {
 		logger.Error("impossibile caricare i dati di test", "err", err)
 		os.Exit(1)
@@ -66,9 +90,9 @@ func main() {
 	logger.Info("dati mock caricati", "totale_documenti", len(messages))
 
 	queue := NewMockQueue(messages)
-	aiClient := NewHTTPInferenceClient(cfg.InferenceURL, cfg.WorkerTimeout)
+	aiClient := NewHTTPInferenceClient(cfg.InferenceURL)
 
-	resultsCh := make(chan PersistedBatch, 100)
+	resultsCh := make(chan ProcessedBatch, 100)
 	orch := NewOrchestrator(cfg, queue, aiClient, resultsCh, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -86,12 +110,21 @@ func main() {
 			batch := item.Batch
 
 			fmt.Printf("\n=== ANALISI BATCH: %s ===\n", batch.ID)
+			fmt.Printf("Modelli: sentiment=%s | ner=%s | summary=%s\n",
+				batch.ModelVersions.SentimentModelID,
+				batch.ModelVersions.NERModelID,
+				batch.ModelVersions.SummaryModelID,
+			)
+
 			for i := 0; i < batch.Size; i++ {
 				processedDocs++
 
 				fmt.Printf("\n[%d] ID: %s\n", processedDocs, batch.IDs[i])
+				fmt.Printf("  SourceID: %s\n", batch.SourceIDs[i])
 				fmt.Printf("  Testo: %s\n", batch.Texts[i])
+				fmt.Printf("  Status: %d\n", batch.Statuses[i])
 				fmt.Printf("  Sentiment: %s (%.2f)\n", batch.SentimentLabels[i], batch.SentimentScores[i])
+				fmt.Printf("  ProcessingMs: %d\n", batch.ProcessingMs[i])
 
 				if len(batch.Entities[i]) > 0 {
 					fmt.Printf("  Entità: ")
@@ -107,20 +140,25 @@ func main() {
 					fmt.Printf("  Summary:\n    %s\n", batch.Summaries[i])
 				}
 
-				if batch.ProcessingErrors[i] != nil {
-					fmt.Printf("  Errore: %v\n", batch.ProcessingErrors[i])
+				if batch.ProcessingErrors[i] != "" {
+					fmt.Printf("  Errore: %s\n", batch.ProcessingErrors[i])
 				}
 			}
 
 			logger.Info("persisting batch", "batch_id", batch.ID, "size", batch.Size)
 
+			// Demo mode: assume persistence succeeds.
 			persistOK := true
 
 			if persistOK {
 				if err := item.Ack(); err != nil {
 					logger.Error("ack batch fallito", "batch_id", batch.ID, "err", err)
 				} else {
-					logger.Info("batch persistito e ackato", "batch_id", batch.ID, "totale_processati", processedDocs)
+					logger.Info(
+						"batch persistito e ackato",
+						"batch_id", batch.ID,
+						"totale_processati", processedDocs,
+					)
 				}
 			} else {
 				if err := item.Nack(); err != nil {

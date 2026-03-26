@@ -1,52 +1,122 @@
 [
   {
-    "ID": "87cb20d9-02fd-4f18-951a-eaa7c1ce538f",
+    "ID": "83026adb-e7f3-4bc4-9567-8950822a2aef",
+    "SourceID": "source-email",
+    "Text": "Il Samsung Galaxy S24 comprato da Unieuro a Napoli funziona benissimo.",
+    "Lang": "it"
+  },
+  {
+    "ID": "bce4524c-621c-4e5c-8c82-363f9ec903bc",
+    "SourceID": "source-app",
+    "Text": "I had a great experience with Booking.com during my trip to Barcelona.",
+    "Lang": "en"
+  },
+  {
+    "ID": "1a0c07f9-66db-4eca-a71a-77aded210f21",
+    "SourceID": "source-app",
+    "Text": "DHL delivered my Samsung Galaxy S24 to Paris earlier than expected.",
+    "Lang": "en"
+  },
+  {
+    "ID": "8bcc5d1e-7d08-4413-8c34-e84236f8a1ae",
     "SourceID": "source-web",
-    "Text": "Fast delivery. The build quality is fantastic."
+    "Text": "My Lenovo ThinkPad from MediaMarkt in Munich works exactly as described.",
+    "Lang": "en"
   },
   {
-    "ID": "8a383af1-e93f-4f24-a14f-5580816f09e9",
-    "SourceID": "source-app",
-    "Text": "Il sistema va in crash continuamente. Inaccettabile."
-  },
-  {
-    "ID": "616b40d9-706b-48bd-8f37-5a03bbdbb7db",
+    "ID": "f8b1b260-18a2-4414-8bf4-a6a329fc4302",
     "SourceID": "source-web",
-    "Text": "La qualit\u00e0 \u00e8 eccellente e l'interfaccia utente \u00e8 molto intuitiva."
+    "Text": "Booking.com did not respond to my complaint about the hotel in Milan.",
+    "Lang": "en"
   },
   {
-    "ID": "1df2113e-337e-4cd6-a55c-d444ac04b671",
+    "ID": "928642c0-a9f5-49a8-ae10-e9c45c7c722b",
     "SourceID": "source-app",
-    "Text": "Fast delivery. The build quality is fantastic."
+    "Text": "Il servizio clienti di Booking.com mi ha aiutato subito durante il soggiorno a Firenze.",
+    "Lang": "it"
   },
   {
-    "ID": "42555dc4-4639-4637-8aff-3d4b44ae5747",
+    "ID": "dd117788-e35d-48c8-bfe7-2cf7990da909",
+    "SourceID": "source-web",
+    "Text": "My Lenovo ThinkPad from MediaMarkt in Munich works exactly as described.",
+    "Lang": "en"
+  },
+  {
+    "ID": "d2cb272c-d97e-4380-8608-14a89a03f5f3",
     "SourceID": "source-app",
-    "Text": "Ottimo prodotto, spedizione velocissima."
+    "Text": "Il software di Acme Corp va in crash su Windows 11 ogni volta che apro il report mensile.",
+    "Lang": "it"
   },
   {
-    "ID": "027ca28f-a1a9-42cf-8aed-e5710ced3a91",
-    "SourceID": "source-app",
-    "Text": "Terrible customer service. I want a refund immediately."
-  },
-  {
-    "ID": "d92c5127-594f-4c06-82f1-cf1c936be276",
-    "SourceID": "source-app",
-    "Text": "Il sistema va in crash continuamente. Inaccettabile."
-  },
-  {
-    "ID": "c91e5832-b6f9-4796-bd7a-64102b40792a",
+    "ID": "6e36b90a-623e-4ff4-b963-40be80c67a4d",
     "SourceID": "source-email",
-    "Text": "Fast delivery. The build quality is fantastic."
+    "Text": "L'app di Intesa Sanpaolo si blocca continuamente sul mio iPhone 14 dopo l'ultimo aggiornamento.",
+    "Lang": "it"
   },
   {
-    "ID": "fbf73db2-023c-4e64-a0d3-24008b1ea10c",
-    "SourceID": "source-email",
-    "Text": "Il sistema va in crash continuamente. Inaccettabile."
+    "ID": "14f14e61-f71d-4352-bda9-aa212f02b320",
+    "SourceID": "source-app",
+    "Text": "Amazon delivered my Sony WH-1000XM5 to London in one day, and the packaging was excellent.",
+    "Lang": "en"
   },
   {
-    "ID": "2251d4df-ccfe-4af9-af75-592fc33eb591",
+    "ID": "10034127-1e25-4e25-b6a7-9488badac51b",
     "SourceID": "source-email",
-    "Text": "Highly recommend this service. It works exactly as described."
+    "Text": "The new Acme Corp software crashes every time I upload files on Windows 11.",
+    "Lang": "en"
+  },
+  {
+    "ID": "07d11c5f-e18a-4fcc-9410-fc72dbb2517b",
+    "SourceID": "source-email",
+    "Text": "PayPal support resolved my refund issue for an eBay order within a few hours.",
+    "Lang": "en"
+  },
+  {
+    "ID": "726a1d2c-0ec2-4942-8cf7-5c215d7a9151",
+    "SourceID": "source-app",
+    "Text": "My Lenovo ThinkPad from MediaMarkt in Munich works exactly as described.",
+    "Lang": "en"
+  },
+  {
+    "ID": "6afadb60-67ba-4746-8515-54a1b6d0a808",
+    "SourceID": "source-app",
+    "Text": "My Lenovo ThinkPad from MediaMarkt in Munich works exactly as described.",
+    "Lang": "en"
+  },
+  {
+    "ID": "1f7754e1-b606-4229-a899-5e13dbcbfca6",
+    "SourceID": "source-email",
+    "Text": "Il Samsung Galaxy S24 comprato da Unieuro a Napoli funziona benissimo.",
+    "Lang": "it"
+  },
+  {
+    "ID": "2b27f35c-de74-4d56-bbb4-c774b9f8f659",
+    "SourceID": "source-app",
+    "Text": "Il servizio clienti di Booking.com mi ha aiutato subito durante il soggiorno a Firenze.",
+    "Lang": "it"
+  },
+  {
+    "ID": "e9fd4507-1c40-4137-8522-637b5abc45f1",
+    "SourceID": "source-email",
+    "Text": "Il software di Acme Corp va in crash su Windows 11 ogni volta che apro il report mensile.",
+    "Lang": "it"
+  },
+  {
+    "ID": "6d451027-66e9-4b99-801e-e77f8c40ec7a",
+    "SourceID": "source-app",
+    "Text": "My Lenovo ThinkPad from MediaMarkt in Munich works exactly as described.",
+    "Lang": "en"
+  },
+  {
+    "ID": "9efc1417-a993-4cc3-8046-24b231ca840a",
+    "SourceID": "source-web",
+    "Text": "Il servizio clienti di Booking.com mi ha aiutato subito durante il soggiorno a Firenze.",
+    "Lang": "it"
+  },
+  {
+    "ID": "e7c823d6-662f-4578-a135-49856458ddd1",
+    "SourceID": "source-web",
+    "Text": "The Apple Store in Berlin replaced my iPhone 15 battery quickly and professionally.",
+    "Lang": "en"
   }
 ]

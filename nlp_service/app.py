@@ -1,14 +1,22 @@
+import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
+
 from nlp_inference import NLPPipeline
+
+logger = logging.getLogger(__name__)
+REQUEST_TIMEOUT_S = float(os.getenv("REQUEST_TIMEOUT_S", "120"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.pipeline = NLPPipeline()
+    pipeline = NLPPipeline()
+    app.state.pipeline = pipeline
     yield
     app.state.pipeline = None
 
@@ -56,20 +64,32 @@ async def analyze(req: InferenceRequest, request: Request):
     if len(req.doc_ids) != len(req.texts):
         raise HTTPException(status_code=400, detail="Mismatched doc_ids and texts")
 
+    if any(not doc_id.strip() for doc_id in req.doc_ids):
+        raise HTTPException(status_code=400, detail="doc_ids cannot contain empty values")
+
+    if any(not text.strip() for text in req.texts):
+        raise HTTPException(status_code=400, detail="texts cannot contain empty values")
+
     pipeline = request.app.state.pipeline
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline not ready")
 
     try:
-        results, versions = await pipeline.process_batch(
-            req.doc_ids,
-            req.texts,
-            batch_size=req.batch_size,
+        results, versions = await asyncio.wait_for(
+            pipeline.process_batch(
+                req.doc_ids,
+                req.texts,
+                batch_size=req.batch_size,
+            ),
+            timeout=REQUEST_TIMEOUT_S,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference failed: {e}") from e
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Inference timed out") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Inference failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Inference failed") from exc
 
     return InferenceResponse(
         results=[

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -31,8 +32,9 @@ type InferenceClient interface {
 }
 
 type InferenceRequest struct {
-	DocIDs []string `json:"doc_ids"`
-	Texts  []string `json:"texts"`
+	DocIDs    []string `json:"doc_ids"`
+	Texts     []string `json:"texts"`
+	BatchSize int      `json:"batch_size"`
 }
 
 type InferenceResponse struct {
@@ -74,24 +76,30 @@ func (e *HTTPStatusError) Error() string {
 }
 
 type OrchestratorConfig struct {
-	NumWorkers     int
-	BatchSize      int
-	WorkerTimeout  time.Duration
-	MaxRetries     int
-	RetryBaseDelay time.Duration
-	InferenceURL   string
-	FlushInterval  time.Duration
+	NumWorkers         int
+	BatchSize          int
+	InferenceBatchSize int
+	WorkerTimeout      time.Duration
+	MaxRetries         int
+	RetryBaseDelay     time.Duration
+	MaxRetryDelay      time.Duration
+	RetryJitterFrac    float64
+	InferenceURL       string
+	FlushInterval      time.Duration
 }
 
 func DefaultConfig() OrchestratorConfig {
 	return OrchestratorConfig{
-		NumWorkers:     8,
-		BatchSize:      32,
-		WorkerTimeout:  120 * time.Second,
-		MaxRetries:     3,
-		RetryBaseDelay: 200 * time.Millisecond,
-		InferenceURL:   "http://localhost:8080/analyze",
-		FlushInterval:  500 * time.Millisecond,
+		NumWorkers:         8,
+		BatchSize:          32,
+		InferenceBatchSize: 32,
+		WorkerTimeout:      120 * time.Second,
+		MaxRetries:         3,
+		RetryBaseDelay:     200 * time.Millisecond,
+		MaxRetryDelay:      5 * time.Second,
+		RetryJitterFrac:    0.20,
+		InferenceURL:       "http://localhost:8080/analyze",
+		FlushInterval:      500 * time.Millisecond,
 	}
 }
 
@@ -100,11 +108,12 @@ type HTTPInferenceClient struct {
 	baseURL string
 }
 
-func NewHTTPInferenceClient(baseURL string, timeout time.Duration) *HTTPInferenceClient {
+func NewHTTPInferenceClient(baseURL string) *HTTPInferenceClient {
 	return &HTTPInferenceClient{
 		baseURL: baseURL,
 		client: &http.Client{
-			Timeout: timeout,
+			// Timeout is controlled via request context in Analyze.
+			Timeout: 0,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
@@ -147,7 +156,7 @@ func (c *HTTPInferenceClient) Analyze(ctx context.Context, req InferenceRequest)
 	return result, nil
 }
 
-type PersistedBatch struct {
+type ProcessedBatch struct {
 	Batch *Batch
 	Ack   func() error
 	Nack  func() error
@@ -157,7 +166,7 @@ type Orchestrator struct {
 	cfg     OrchestratorConfig
 	queue   QueueConsumer
 	ai      InferenceClient
-	results chan<- PersistedBatch
+	results chan<- ProcessedBatch
 	logger  *slog.Logger
 	wg      sync.WaitGroup
 }
@@ -166,7 +175,7 @@ func NewOrchestrator(
 	cfg OrchestratorConfig,
 	queue QueueConsumer,
 	ai InferenceClient,
-	results chan<- PersistedBatch,
+	results chan<- ProcessedBatch,
 	logger *slog.Logger,
 ) *Orchestrator {
 	return &Orchestrator{
@@ -284,7 +293,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, id int, batchCh <-chan *Ba
 
 		if o.results != nil {
 			select {
-			case o.results <- PersistedBatch{
+			case o.results <- ProcessedBatch{
 				Batch: batch,
 				Ack:   ackFn,
 				Nack:  nackFn,
@@ -303,14 +312,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, id int, batchCh <-chan *Ba
 
 func (o *Orchestrator) processBatchWithRetry(ctx context.Context, batch *Batch) error {
 	req := InferenceRequest{
-		DocIDs: batch.IDs,
-		Texts:  batch.Texts,
+		DocIDs:    batch.IDs,
+		Texts:     batch.Texts,
+		BatchSize: o.cfg.InferenceBatchSize,
 	}
 
 	var lastErr error
 	for attempt := 0; attempt <= o.cfg.MaxRetries; attempt++ {
+		for i := 0; i < batch.Size; i++ {
+			batch.MarkProcessing(i)
+		}
+
 		if attempt > 0 {
-			delay := time.Duration(float64(o.cfg.RetryBaseDelay) * math.Pow(2, float64(attempt-1)))
+			delay := o.retryDelay(attempt - 1)
 			o.logger.Info(
 				"retrying batch",
 				"batch_id", batch.ID,
@@ -348,7 +362,30 @@ func (o *Orchestrator) processBatchWithRetry(ctx context.Context, batch *Batch) 
 		}
 	}
 
+	for i := 0; i < batch.Size; i++ {
+		if batch.Statuses[i] != StatusDone {
+			batch.SetError(i, fmt.Errorf("all attempts failed: %w", lastErr))
+		}
+	}
+
 	return fmt.Errorf("all attempts failed: %w", lastErr)
+}
+
+func (o *Orchestrator) retryDelay(attempt int) time.Duration {
+	base := float64(o.cfg.RetryBaseDelay) * math.Pow(2, float64(attempt))
+	delay := time.Duration(base)
+
+	if o.cfg.MaxRetryDelay > 0 && delay > o.cfg.MaxRetryDelay {
+		delay = o.cfg.MaxRetryDelay
+	}
+
+	if o.cfg.RetryJitterFrac <= 0 {
+		return delay
+	}
+
+	maxJitter := float64(delay) * o.cfg.RetryJitterFrac
+	jitter := time.Duration(rand.Float64() * maxJitter)
+	return delay + jitter
 }
 
 func dtoToEntities(dtos []EntityDTO) []Entity {
@@ -388,6 +425,10 @@ func (o *Orchestrator) applyResults(batch *Batch, resp InferenceResponse) {
 			o.logger.Warn("unknown doc_id in response", "doc_id", r.DocID, "batch_id", batch.ID)
 			continue
 		}
+		if seen[idx] {
+			o.logger.Warn("duplicate doc_id in response", "doc_id", r.DocID, "batch_id", batch.ID)
+			continue
+		}
 
 		seen[idx] = true
 
@@ -405,11 +446,19 @@ func (o *Orchestrator) applyResults(batch *Batch, resp InferenceResponse) {
 		}
 	}
 
+	// NOTE: the Python service returns model names / references, not DB UUIDs.
+	// At persistence time you can upsert MODEL_VERSION and resolve real FK ids.
 	batch.ModelVersions = BatchModelVersions{
 		SentimentModelID: resp.ModelVersions.SentimentModel,
 		NERModelID:       resp.ModelVersions.NERModel,
 		SummaryModelID:   resp.ModelVersions.SummaryModel,
 	}
+
+	o.logger.Info(
+		"applied batch results",
+		"batch_id", batch.ID,
+		"prompt_version", resp.ModelVersions.PromptVersion,
+	)
 }
 
 type MockQueue struct {
