@@ -1,17 +1,36 @@
-version: '3.8'
-
 services:
   ai_service:
     build: ./nlp_service
     ports:
       - "8080:8080"
     environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
-
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /cache/huggingface
+      REQUEST_TIMEOUT_S: 120
+      LLM_TIMEOUT_S: 20
+      MAX_TEXT_CHARS: 4000
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - hf_cache:/cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    restart: unless-stopped
 
   backend:
     build: ./backend
     environment:
-      - INFERENCE_URL=http://ai_service:8080/analyze
+      INFERENCE_URL: http://ai_service:8080/analyze
     volumes:
       - ./test_data.json:/app/test_data.json:ro
+    depends_on:
+      ai_service:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  hf_cache:

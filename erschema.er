@@ -1,0 +1,63 @@
+erDiagram
+    SOURCE_METADATA {
+        uuid id PK
+        string name
+        string platform_type
+        string url
+        string default_language
+        timestamp created_at
+    }
+
+    DOCUMENT {
+        uuid id PK
+        uuid source_id FK
+        text original_text
+        string hash
+        string language
+        string status
+        timestamp received_at
+        timestamp created_at
+    }
+
+    MODEL_VERSION {
+        uuid id PK
+        string model_name
+        string version
+        string task_type
+        string provider
+        string artifact_uri
+        timestamp registered_at
+    }
+
+    ANALYSIS_RUN {
+        uuid id PK
+        uuid document_id FK
+        uuid sentiment_model_id FK
+        uuid ner_model_id FK
+        uuid summary_model_id FK
+        string run_status
+        string trigger_type
+        string prompt_version
+        timestamp started_at
+        timestamp completed_at
+        timestamp created_at
+        text error_message
+    }
+
+    ANALYSIS_RESULT {
+        uuid id PK
+        uuid analysis_run_id FK
+        float sentiment_score
+        string sentiment_label
+        jsonb entities
+        text summary
+        int processing_ms
+        timestamp created_at
+    }
+
+    SOURCE_METADATA ||--o{ DOCUMENT : produces
+    DOCUMENT ||--o{ ANALYSIS_RUN : has
+    ANALYSIS_RUN ||--o| ANALYSIS_RESULT : outputs
+    MODEL_VERSION ||--o{ ANALYSIS_RUN : sentiment_model
+    MODEL_VERSION ||--o{ ANALYSIS_RUN : ner_model
+    MODEL_VERSION ||--o{ ANALYSIS_RUN : summary_model

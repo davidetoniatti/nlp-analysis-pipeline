@@ -1,6 +1,6 @@
 """
 NLP inference service: sentiment (multilingual XLM-RoBERTa), NER (multilingual),
-conditional summarization (Gemini via OpenAI-compatible API) with structured JSON output.
+conditional summarization (via OpenAI-compatible API) with structured JSON output.
 
 Dependencies:
     pip install transformers torch accelerate openai python-dotenv pydantic
@@ -331,7 +331,7 @@ class ConditionalSummarizer:
     Generates a summary only if sentiment is Negative.
     """
 
-    MAX_CONCURRENT_REQUESTS = 10  # concurrent slots towards Gemini
+    MAX_CONCURRENT_REQUESTS = 10
 
     _SYSTEM_PROMPT = (
         "Sei un assistente specializzato nell'analisi di feedback negativi dei clienti. "
@@ -516,7 +516,6 @@ class NLPPipeline:
         )
 
         labels = ["Neutral"] * n
-        scores = [0.0] * n
         for i, raw in enumerate(raw_sentiments):
             if raw is None:
                 results[i].error = merge_error(
@@ -527,7 +526,6 @@ class NLPPipeline:
 
             label, score = self.sentiment.score_to_label(raw.get("label", ""), float(raw.get("score", 0.0)))
             labels[i] = label
-            scores[i] = score
             results[i].sentiment_label = label
             results[i].sentiment_score = score
 

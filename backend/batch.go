@@ -48,10 +48,11 @@ type Batch struct {
 
 	// Parallel fields: IDs[i], Texts[i], SourceIDs[i] refer to the
 	// same document. Index access is O(1) and cache-friendly.
-	IDs       []string // document UUIDs
-	SourceIDs []string // FK to source_metadata
-	Hashes    []string // DOCUMENT.hash; optional but useful for dedup / traceability
-	Texts     []string // original text (the heaviest field in memory)
+	IDs            []string // document UUIDs
+	SourceIDs      []string // FK to source_metadata
+	Hashes         []string // DOCUMENT.hash; optional but useful for dedup / traceability
+	Texts          []string // original text (the heaviest field in memory)
+	AnalysisRunIDs []string // analysis run UUIDs
 
 	// Results: written by Workers concurrently.
 	// We use fixed-size types where possible (float32 < float64).
@@ -101,10 +102,11 @@ func NewBatch(id string, size int) *Batch {
 
 		// Pre-allocation with exact capacity: cap == len == size.
 		// make([]T, size) allocates and zeroes in a single syscall.
-		IDs:       make([]string, size),
-		SourceIDs: make([]string, size),
-		Hashes:    make([]string, size),
-		Texts:     make([]string, size),
+		IDs:            make([]string, size),
+		SourceIDs:      make([]string, size),
+		Hashes:         make([]string, size),
+		Texts:          make([]string, size),
+		AnalysisRunIDs: make([]string, size),
 
 		SentimentScores:  make([]float32, size),
 		SentimentLabels:  make([]string, size),
@@ -137,6 +139,7 @@ func (b *Batch) SetDocumentWithHash(i int, id, sourceID, text, hash string) {
 	b.SourceIDs[i] = sourceID
 	b.Hashes[i] = hash
 	b.Texts[i] = text
+	b.AnalysisRunIDs[i] = ""
 
 	// Ensure a clean slot in case the batch object is ever reused.
 	b.SentimentScores[i] = 0
@@ -149,6 +152,15 @@ func (b *Batch) SetDocumentWithHash(i int, id, sourceID, text, hash string) {
 
 	b.Statuses[i] = StatusPending
 }
+
+// SetAnalysisRunID stores the ANALYSIS_RUN id for document i.
+//
+// Must be called before the Worker starts processing document i (single-writer
+// phase), or under external synchronization if invoked concurrently.
+func (b *Batch) SetAnalysisRunID(i int, runID string) {
+	b.AnalysisRunIDs[i] = runID
+}
+
 
 // MarkProcessing marks document i as currently being processed.
 //

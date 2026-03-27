@@ -16,7 +16,7 @@ import (
 func loadMockData(filename string) ([]Message, error) {
 	file, err := os.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf("apertura file fallita: %w", err)
+		return nil, fmt.Errorf("open file failed: %w", err)
 	}
 	defer file.Close()
 
@@ -27,7 +27,7 @@ func loadMockData(filename string) ([]Message, error) {
 	}
 
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		return nil, fmt.Errorf("decodifica JSON fallita: %w", err)
+		return nil, fmt.Errorf("json decode failed: %w", err)
 	}
 
 	messages := make([]Message, len(data))
@@ -60,6 +60,21 @@ func resolveMockDataPath() string {
 	return "test_data.json"
 }
 
+func statusString(s DocumentStatus) string {
+	switch s {
+	case StatusPending:
+		return "pending"
+	case StatusProcessing:
+		return "processing"
+	case StatusDone:
+		return "done"
+	case StatusFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -74,7 +89,7 @@ func main() {
 	dataFile := resolveMockDataPath()
 
 	logger.Info(
-		"avvio sistema",
+		"starting system",
 		"inference_url", cfg.InferenceURL,
 		"workers", cfg.NumWorkers,
 		"batch_size", cfg.BatchSize,
@@ -84,10 +99,10 @@ func main() {
 
 	messages, err := loadMockData(dataFile)
 	if err != nil {
-		logger.Error("impossibile caricare i dati di test", "err", err)
+		logger.Error("failed to load mock data", "err", err)
 		os.Exit(1)
 	}
-	logger.Info("dati mock caricati", "totale_documenti", len(messages))
+	logger.Info("mock data loaded", "total_documents", len(messages))
 
 	queue := NewMockQueue(messages)
 	aiClient := NewHTTPInferenceClient(cfg.InferenceURL)
@@ -109,8 +124,8 @@ func main() {
 		for item := range resultsCh {
 			batch := item.Batch
 
-			fmt.Printf("\n=== ANALISI BATCH: %s ===\n", batch.ID)
-			fmt.Printf("Modelli: sentiment=%s | ner=%s | summary=%s\n",
+			fmt.Printf("\n=== BATCH ANALYSIS: %s ===\n", batch.ID)
+			fmt.Printf("Models: sentiment=%s | ner=%s | summary=%s\n",
 				batch.ModelVersions.SentimentModelID,
 				batch.ModelVersions.NERModelID,
 				batch.ModelVersions.SummaryModelID,
@@ -120,20 +135,21 @@ func main() {
 				processedDocs++
 
 				fmt.Printf("\n[%d] ID: %s\n", processedDocs, batch.IDs[i])
+				fmt.Printf("  AnalysisRunID: %s\n", batch.AnalysisRunIDs[i])
 				fmt.Printf("  SourceID: %s\n", batch.SourceIDs[i])
-				fmt.Printf("  Testo: %s\n", batch.Texts[i])
-				fmt.Printf("  Status: %d\n", batch.Statuses[i])
+				fmt.Printf("  Text: %s\n", batch.Texts[i])
+				fmt.Printf("  Status: %s (%d)\n", statusString(batch.Statuses[i]), batch.Statuses[i])
 				fmt.Printf("  Sentiment: %s (%.2f)\n", batch.SentimentLabels[i], batch.SentimentScores[i])
 				fmt.Printf("  ProcessingMs: %d\n", batch.ProcessingMs[i])
 
 				if len(batch.Entities[i]) > 0 {
-					fmt.Printf("  Entità: ")
+					fmt.Printf("  Entities: ")
 					for _, e := range batch.Entities[i] {
 						fmt.Printf("[%s: %s (%.2f)] ", e.Text, e.Label, e.Score)
 					}
 					fmt.Println()
 				} else {
-					fmt.Printf("  Entità: nessuna rilevata\n")
+					fmt.Printf("  Entities: none detected\n")
 				}
 
 				if batch.Summaries[i] != "" {
@@ -141,7 +157,7 @@ func main() {
 				}
 
 				if batch.ProcessingErrors[i] != "" {
-					fmt.Printf("  Errore: %s\n", batch.ProcessingErrors[i])
+					fmt.Printf("  Error: %s\n", batch.ProcessingErrors[i])
 				}
 			}
 
@@ -152,28 +168,28 @@ func main() {
 
 			if persistOK {
 				if err := item.Ack(); err != nil {
-					logger.Error("ack batch fallito", "batch_id", batch.ID, "err", err)
+					logger.Error("batch ack failed", "batch_id", batch.ID, "err", err)
 				} else {
 					logger.Info(
-						"batch persistito e ackato",
+						"batch persisted and acked",
 						"batch_id", batch.ID,
-						"totale_processati", processedDocs,
+						"total_processed", processedDocs,
 					)
 				}
 			} else {
 				if err := item.Nack(); err != nil {
-					logger.Error("nack batch fallito", "batch_id", batch.ID, "err", err)
+					logger.Error("batch nack failed", "batch_id", batch.ID, "err", err)
 				} else {
-					logger.Warn("batch non persistito, inviato in retry", "batch_id", batch.ID)
+					logger.Warn("batch not persisted, sent for retry", "batch_id", batch.ID)
 				}
 			}
 		}
 	}()
 
-	logger.Info("orchestrator in esecuzione...")
+	logger.Info("orchestrator running")
 
 	if err := orch.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("orchestrator terminato con errore", "err", err)
+		logger.Error("orchestrator terminated with error", "err", err)
 		close(resultsCh)
 		persistWG.Wait()
 		os.Exit(1)
@@ -181,5 +197,5 @@ func main() {
 
 	close(resultsCh)
 	persistWG.Wait()
-	logger.Info("spegnimento completato con successo")
+	logger.Info("shutdown completed successfully")
 }

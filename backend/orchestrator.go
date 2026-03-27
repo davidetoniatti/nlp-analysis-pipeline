@@ -310,7 +310,33 @@ func (o *Orchestrator) runWorker(ctx context.Context, id int, batchCh <-chan *Ba
 	}
 }
 
+func newAnalysisRunID(batchID string, docIndex int) string {
+	return fmt.Sprintf(
+		"%s-run-%02d-%d-%d",
+		batchID,
+		docIndex,
+		time.Now().UTC().UnixNano(),
+		rand.Uint64(),
+	)
+}
+
+// ensureAnalysisRunIDs assigns one ANALYSIS_RUN id per document.
+//
+// Technical retries reuse the same run id so that transport retries do not
+// create duplicate logical runs for the same document.
+func (o *Orchestrator) ensureAnalysisRunIDs(batch *Batch) {
+	for i := 0; i < batch.Size; i++ {
+		if batch.AnalysisRunIDs[i] == "" {
+			batch.SetAnalysisRunID(i, newAnalysisRunID(batch.ID, i))
+		}
+	}
+}
+
 func (o *Orchestrator) processBatchWithRetry(ctx context.Context, batch *Batch) error {
+	// Assign one run id per document before the first attempt.
+	// Retries reuse the same run ids.
+	o.ensureAnalysisRunIDs(batch)
+
 	req := InferenceRequest{
 		DocIDs:    batch.IDs,
 		Texts:     batch.Texts,
@@ -319,10 +345,6 @@ func (o *Orchestrator) processBatchWithRetry(ctx context.Context, batch *Batch) 
 
 	var lastErr error
 	for attempt := 0; attempt <= o.cfg.MaxRetries; attempt++ {
-		for i := 0; i < batch.Size; i++ {
-			batch.MarkProcessing(i)
-		}
-
 		if attempt > 0 {
 			delay := o.retryDelay(attempt - 1)
 			o.logger.Info(
@@ -338,6 +360,12 @@ func (o *Orchestrator) processBatchWithRetry(ctx context.Context, batch *Batch) 
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		}
+
+		// Mark documents as processing immediately before the remote inference
+		// call so ProcessingMs measures execution time rather than backoff time.
+		for i := 0; i < batch.Size; i++ {
+			batch.MarkProcessing(i)
 		}
 
 		callCtx, cancel := context.WithTimeout(ctx, o.cfg.WorkerTimeout)
@@ -454,6 +482,8 @@ func (o *Orchestrator) applyResults(batch *Batch, resp InferenceResponse) {
 		SummaryModelID:   resp.ModelVersions.SummaryModel,
 	}
 
+	// NOTE: PromptVersion is logged here. If you later extend Batch or your
+	// persistence payload, persist it into ANALYSIS_RUN.prompt_version.
 	o.logger.Info(
 		"applied batch results",
 		"batch_id", batch.ID,

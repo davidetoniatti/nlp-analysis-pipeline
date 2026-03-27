@@ -1,20 +1,19 @@
-# Stage 1: Build
-FROM golang:latest AS builder
+# Build
+FROM golang:1.25-alpine3.23 AS builder
 
 WORKDIR /app
 
 COPY go.mod ./
-# Se hai dipendenze esterne in futuro, decommenta la riga sotto
+# for future dependencies
 # COPY go.sum ./
 # RUN go mod download
 
 COPY . .
 
-# Compilazione statica
 RUN CGO_ENABLED=0 GOOS=linux go build -o orchestrator .
 
-# Stage 2: Runtime
-FROM alpine:latest
+# Runtime
+FROM alpine:3.23
 
 WORKDIR /app
 

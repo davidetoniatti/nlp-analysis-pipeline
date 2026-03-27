@@ -5,26 +5,35 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from nlp_inference import NLPPipeline
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
 REQUEST_TIMEOUT_S = float(os.getenv("REQUEST_TIMEOUT_S", "120"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Initializing NLP pipeline ...")
     pipeline = NLPPipeline()
     app.state.pipeline = pipeline
-    yield
-    app.state.pipeline = None
+    logger.info("NLP pipeline ready.")
+    try:
+        yield
+    finally:
+        app.state.pipeline = None
+        logger.info("NLP pipeline shutdown completed.")
 
 
 app = FastAPI(title="NLP Inference API", lifespan=lifespan)
 
 
 class InferenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     doc_ids: list[str] = Field(min_length=1)
     texts: list[str] = Field(min_length=1)
     batch_size: int = Field(default=32, ge=1, le=256)
