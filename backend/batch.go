@@ -53,7 +53,7 @@ type Batch struct {
 
 	// When processing started for each document.
 	// Unix nanoseconds are smaller and cheaper than []time.Time.
-	
+
 	startedAtUnixNano []int64
 
 	/* Model traceability for the whole batch. */

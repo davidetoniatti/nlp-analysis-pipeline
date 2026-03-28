@@ -1,3 +1,4 @@
+```mermaid
 erDiagram
     SOURCE_METADATA {
         uuid id PK
@@ -61,3 +62,4 @@ erDiagram
     MODEL_VERSION ||--o{ ANALYSIS_RUN : sentiment_model
     MODEL_VERSION ||--o{ ANALYSIS_RUN : ner_model
     MODEL_VERSION ||--o{ ANALYSIS_RUN : summary_model
+```

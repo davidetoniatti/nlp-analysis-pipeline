@@ -323,12 +323,6 @@ func (o *Orchestrator) runWorker(ctx context.Context, id int, batchCh <-chan *Ba
 		err := o.processBatchWithRetry(ctx, batch)
 		if err != nil {
 			log.Error("batch failed definitively", "batch_id", batch.ID, "err", err)
-			for _, msgID := range batch.IDs {
-				if nackErr := o.queue.Nack(msgID); nackErr != nil {
-					log.Error("nack failed", "msg_id", msgID, "err", nackErr)
-				}
-			}
-			continue
 		}
 
 		ackFn := func() error {
@@ -363,8 +357,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, id int, batchCh <-chan *Ba
 			continue
 		}
 
-		if err := ackFn(); err != nil {
-			log.Error("ack batch failed", "batch_id", batch.ID, "err", err)
+		if err != nil {
+			if nackErr := nackFn(); nackErr != nil {
+				log.Error("nack batch failed", "batch_id", batch.ID, "err", nackErr)
+			}
+			continue
+		}
+
+		if ackErr := ackFn(); ackErr != nil {
+			log.Error("ack batch failed", "batch_id", batch.ID, "err", ackErr)
 		}
 	}
 }
@@ -422,9 +423,9 @@ func (o *Orchestrator) processBatchWithRetry(ctx context.Context, batch *Batch) 
 		}
 
 		/*
-		Mark documents right before the remote call.
-		This keeps ProcessingMs tied to actual work time,
-		not to time spent sleeping between retries.
+			Mark documents right before the remote call.
+			This keeps ProcessingMs tied to actual work time,
+			not to time spent sleeping between retries.
 		*/
 		for i := 0; i < batch.Size; i++ {
 			batch.MarkProcessing(i)
@@ -551,9 +552,9 @@ func (o *Orchestrator) applyResults(batch *Batch, resp InferenceResponse) {
 	}
 
 	/*
-	Model versions coming from Python are logical names, not DB ids.
-	The persistence layer can upsert MODEL_VERSION rows
-	and resolve real foreign keys later.
+		Model versions coming from Python are logical names, not DB ids.
+		The persistence layer can upsert MODEL_VERSION rows
+		and resolve real foreign keys later.
 	*/
 	batch.ModelVersions = BatchModelVersions{
 		SentimentModelID: resp.ModelVersions.SentimentModel,

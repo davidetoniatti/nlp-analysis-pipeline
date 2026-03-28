@@ -72,8 +72,8 @@ func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 	}()
 
 	/*
-	Resolve logical model names to real MODEL_VERSION rows first.
-	Every analysis_run needs stable foreign keys.
+		Resolve logical model names to real MODEL_VERSION rows first.
+		Every analysis_run needs stable foreign keys.
 	*/
 	sentimentModelID, err := s.upsertModelVersion(ctx, tx, batch.ModelVersions.SentimentModelID, "sentiment")
 	if err != nil {

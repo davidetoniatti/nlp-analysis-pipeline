@@ -86,7 +86,9 @@ async def analyze(req: InferenceRequest, request: Request):
         raise HTTPException(status_code=400, detail="Mismatched doc_ids and texts")
 
     if any(not doc_id.strip() for doc_id in req.doc_ids):
-        raise HTTPException(status_code=400, detail="doc_ids cannot contain empty values")
+        raise HTTPException(
+            status_code=400, detail="doc_ids cannot contain empty values"
+        )
 
     if any(not text.strip() for text in req.texts):
         raise HTTPException(status_code=400, detail="texts cannot contain empty values")
@@ -146,7 +148,10 @@ async def analyze(req: InferenceRequest, request: Request):
 @app.get("/health")
 async def health(request: Request):
     """Report whether the pipeline is initialized and ready."""
-    pipeline_ready = hasattr(request.app.state, "pipeline") and request.app.state.pipeline is not None
+    pipeline_ready = (
+        hasattr(request.app.state, "pipeline")
+        and request.app.state.pipeline is not None
+    )
     if not pipeline_ready:
         raise HTTPException(status_code=503, detail="Pipeline not ready")
     return {"status": "ok"}

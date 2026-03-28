@@ -182,9 +182,9 @@ func handleProcessedBatch(
 	expectedFailed := countBatchStatus(batch, StatusFailed)
 
 	/*
-	Check that what landed in Postgres matches what the batch says.
-	This is small but useful: it makes persistence failures visible
-	even when the SQL transaction itself did not error out.
+		Check that what landed in Postgres matches what the batch says.
+		This is small but useful: it makes persistence failures visible
+		even when the SQL transaction itself did not error out.
 	*/
 	if stats.RunsTotal != batch.Size ||
 		stats.RunsDone != expectedDone ||

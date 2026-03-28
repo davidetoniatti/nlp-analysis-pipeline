@@ -186,7 +186,9 @@ class SentimentAnalyzer:
             return [], []
 
         sorted_items = self._bucket_sort(texts)
-        dynamic_batches = self._build_dynamic_batches(sorted_items, max_batch_size=batch_size)
+        dynamic_batches = self._build_dynamic_batches(
+            sorted_items, max_batch_size=batch_size
+        )
 
         predictions: list[Optional[dict]] = [None] * len(texts)
         errors: list[Optional[str]] = [None] * len(texts)
@@ -207,7 +209,9 @@ class SentimentAnalyzer:
                     predictions[idx] = pred
             except Exception as batch_exc:
                 # If the whole chunk fails, fall back to per-document inference.
-                logger.exception("Sentiment chunk failed, retrying per document: %s", batch_exc)
+                logger.exception(
+                    "Sentiment chunk failed, retrying per document: %s", batch_exc
+                )
                 for idx, text, _ in batch:
                     try:
                         with torch.inference_mode():
@@ -250,7 +254,9 @@ class NERExtractor:
         self.device = 0 if torch.cuda.is_available() else -1
         self.score_threshold = score_threshold
 
-        logger.info("Loading NER model on %s ...", "CUDA" if self.device == 0 else "CPU")
+        logger.info(
+            "Loading NER model on %s ...", "CUDA" if self.device == 0 else "CPU"
+        )
         self._pipe: Pipeline = pipeline(
             "ner",
             model=model_name,
@@ -283,7 +289,9 @@ class NERExtractor:
                 for idx, doc_entities in zip(chunk_indices, raw):
                     results[idx] = self._convert_entities(doc_entities)
             except Exception as batch_exc:
-                logger.exception("NER chunk failed, retrying per document: %s", batch_exc)
+                logger.exception(
+                    "NER chunk failed, retrying per document: %s", batch_exc
+                )
                 for idx, text in zip(chunk_indices, chunk):
                     try:
                         with torch.inference_mode():
@@ -384,7 +392,9 @@ Restituisci ESCLUSIVAMENTE un oggetto JSON con questa struttura:
             return None, None
 
         safe_text = normalize_text(text, max_chars=self._max_text_chars)
-        entity_str = ", ".join(f"{e.text} ({e.label})" for e in entities[:25]) or "nessuna"
+        entity_str = (
+            ", ".join(f"{e.text} ({e.label})" for e in entities[:25]) or "nessuna"
+        )
         prompt = self._USER_PROMPT_TEMPLATE.format(text=safe_text, entities=entity_str)
 
         async with self._semaphore:
@@ -410,13 +420,19 @@ Restituisci ESCLUSIVAMENTE un oggetto JSON con questa struttura:
                 try:
                     parsed = json.loads(raw)
                     payload = SummaryPayload.model_validate(parsed)
-                    normalized_json = json.dumps(payload.model_dump(), ensure_ascii=False)
+                    normalized_json = json.dumps(
+                        payload.model_dump(), ensure_ascii=False
+                    )
                     return normalized_json, None
                 except json.JSONDecodeError as exc:
-                    logger.error("Invalid JSON from summarization: %s | raw: %.200s", exc, raw)
+                    logger.error(
+                        "Invalid JSON from summarization: %s | raw: %.200s", exc, raw
+                    )
                     return None, "invalid_summary_json"
                 except ValidationError as exc:
-                    logger.error("Summary schema validation failed: %s | raw: %.200s", exc, raw)
+                    logger.error(
+                        "Summary schema validation failed: %s | raw: %.200s", exc, raw
+                    )
                     return None, "invalid_summary_schema"
 
             except asyncio.TimeoutError:
@@ -519,7 +535,9 @@ class NLPPipeline:
         for i, entities in enumerate(entities_list):
             results[i].entities = entities
             if ner_errors[i]:
-                results[i].error = merge_error(results[i].error, f"ner_failed: {ner_errors[i]}")
+                results[i].error = merge_error(
+                    results[i].error, f"ner_failed: {ner_errors[i]}"
+                )
 
         summaries, summary_errors = await self.summarizer.summarize_batch(
             prepared_texts,
@@ -530,7 +548,9 @@ class NLPPipeline:
         for i, summary in enumerate(summaries):
             results[i].summary = summary
             if summary_errors[i]:
-                results[i].error = merge_error(results[i].error, f"summary_failed: {summary_errors[i]}")
+                results[i].error = merge_error(
+                    results[i].error, f"summary_failed: {summary_errors[i]}"
+                )
 
         neg_count = sum(1 for label in labels if label == "Negative")
         logger.info(
@@ -559,7 +579,9 @@ async def main():
         "Prodotto nella media, niente di speciale.",
     ]
 
-    results, model_info = await pipeline_instance.process_batch(sample_ids, sample_texts)
+    results, model_info = await pipeline_instance.process_batch(
+        sample_ids, sample_texts
+    )
 
     print(model_info)
     for r in results:

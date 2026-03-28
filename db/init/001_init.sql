@@ -63,6 +63,10 @@ CREATE INDEX IF NOT EXISTS idx_document_source_id
 CREATE INDEX IF NOT EXISTS idx_document_status
     ON document(status);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_document_hash
+    ON document(hash)
+    WHERE hash IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_analysis_run_document_id
     ON analysis_run(document_id);
 
