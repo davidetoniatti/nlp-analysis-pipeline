@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// DocumentStatus represents the processing status of a document.
+/* DocumentStatus is the lifecycle state of a document inside a batch. */
 type DocumentStatus uint8
 
 const (
@@ -15,96 +15,89 @@ const (
 	StatusFailed
 )
 
-// Batch contains a set of documents to be processed together.
-//
-// "Struct of arrays" design: instead of []Document (array of structs, each
-// element with all its fields), we use parallel fields. This reduces
-// allocation because:
-//   - a single contiguous backing array per field
-//   - better cache locality during access to a single field (e.g., only texts)
-//   - no wasted padding/alignment between fields of different types
-//
-// All slices are pre-allocated with the batch capacity at creation time:
-// no append = no dynamic reallocation.
-//
-// Concurrency contract:
-//   - SetDocument must be called before any Worker starts (single-writer phase).
-//   - SetResult and SetError may be called concurrently by Workers, each on a
-//     DISTINCT index. The caller is responsible for index partitioning.
-//   - FailedIndices and IsDone must be called only after all Workers have
-//     completed (or under external synchronization).
+/*
+* Batch stores a group of documents processed together.
+* The layout is "struct of arrays" instead of "array of structs".
+* This keeps allocations predictable and makes per-field scans cheaper.
+* Concurrency model:
+* - SetDocument* methods are single-writer setup methods.
+* - SetResult and SetError can run concurrently on different indices.
+* - Readers like FailedIndices and IsDone use the mutex for consistency. */
 type Batch struct {
-	// mu protects Statuses, ProcessingErrors and batch-level timestamps during
-	// concurrent Worker writes. RWMutex allows multiple concurrent readers
-	// (FailedIndices, IsDone) while still serializing writes from concurrent
-	// Workers calling SetResult / SetError / MarkProcessing.
+	/* Protects shared state touched by concurrent workers. */
 	mu sync.RWMutex
 
-	// Batch metadata.
-	ID        string
-	CreatedAt time.Time
-	UpdatedAt time.Time // last modification time; useful for retry debugging
-	Size      int       // number of documents in the batch
+	/* Batch metadata. */
+	ID            string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Size          int
 	PromptVersion string
 
-	// Parallel fields: IDs[i], Texts[i], SourceIDs[i] refer to the
-	// same document. Index access is O(1) and cache-friendly.
-	IDs            []string // document UUIDs
-	SourceIDs      []string // FK to source_metadata
-	Hashes         []string // DOCUMENT.hash; optional but useful for dedup / traceability
-	Texts          []string // original text (the heaviest field in memory)
-	AnalysisRunIDs []string // analysis run UUIDs
+	/* Parallel arrays. Same index, same document. */
+	IDs            []string
+	SourceIDs      []string
+	Languages      []string
+	Hashes         []string
+	Texts          []string
+	AnalysisRunIDs []string
 
-	// Results: written by Workers concurrently.
-	// We use fixed-size types where possible (float32 < float64).
-	SentimentScores []float32      // [-1.0, 1.0]
-	SentimentLabels []string       // "Positive", "Negative", "Neutral"
-	Entities        [][]Entity     // slice of entities per document
-	Summaries       []string       // only for negative documents
-	ProcessingMs    []int32        // processing latency per document
-	Statuses        []DocumentStatus
-	ProcessingErrors []string // serialised error strings; avoids []error GC pressure
+	/* Per-document outputs. */
+	SentimentScores  []float32
+	SentimentLabels  []string
+	Entities         [][]Entity
+	Summaries        []string
+	ProcessingMs     []int32
+	Statuses         []DocumentStatus
+	ProcessingErrors []string
 
-	// startedAtUnixNano tracks when each document entered StatusProcessing.
-	// int64 is smaller and cheaper than storing []time.Time.
+	// When processing started for each document.
+	// Unix nanoseconds are smaller and cheaper than []time.Time.
+	
 	startedAtUnixNano []int64
 
-	// Traceability of the models used for this batch.
+	/* Model traceability for the whole batch. */
 	ModelVersions BatchModelVersions
 }
 
-// Entity represents a named entity extracted from the text.
-// It is a small value type: do not use pointers to avoid GC pressure.
+/*
+ * Entity is a named entity extracted from the text.
+ * Keep it as a small value type. Pointers add no value here. */
 type Entity struct {
 	Text  string
-	Label string  // PER, ORG, LOC, MISC
-	Start int32   // character offset
+	Label string
+	Start int32
 	End   int32
 	Score float32
 }
 
-// BatchModelVersions tracks which model version was used
-// for each task in this batch. Fundamental for reproducibility.
+/*
+BatchModelVersions records which models produced this batch.
+This is small metadata, but it is important for traceability.
+*/
 type BatchModelVersions struct {
 	SentimentModelID string
 	NERModelID       string
 	SummaryModelID   string
 }
 
-// NewBatch creates a Batch pre-allocated for size documents.
-// Always pass the exact size: avoids internal slice reallocations.
+/*
+NewBatch allocates a batch with all slices sized upfront.
+The caller should pass the exact size so the batch never needs to grow.
+*/
 func NewBatch(id string, size int) *Batch {
 	now := time.Now().UTC()
+
 	return &Batch{
 		ID:        id,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Size:      size,
 
-		// Pre-allocation with exact capacity: cap == len == size.
-		// make([]T, size) allocates and zeroes in a single syscall.
+		/* Fixed-size slices keep memory usage simple and predictable. */
 		IDs:            make([]string, size),
 		SourceIDs:      make([]string, size),
+		Languages:      make([]string, size),
 		Hashes:         make([]string, size),
 		Texts:          make([]string, size),
 		AnalysisRunIDs: make([]string, size),
@@ -121,28 +114,33 @@ func NewBatch(id string, size int) *Batch {
 	}
 }
 
-// SetDocument populates the i-th slot of the batch.
-//
-// Must be called before any Worker goroutine starts (single-writer phase).
-// Concurrent calls from multiple goroutines are NOT safe; index partitioning
-// alone does not protect the UpdatedAt field shared across all indices.
-//
-// This keeps backward compatibility with the previous signature and stores an
-// empty hash when the caller does not have it yet.
+/*
+SetDocument fills one slot with the minimum required input data.
+This is a compatibility wrapper for callers that do not provide
+language and hash yet.
+*/
 func (b *Batch) SetDocument(i int, id, sourceID, text string) {
-	b.SetDocumentWithHash(i, id, sourceID, text, "")
+	b.SetDocumentWithLangAndHash(i, id, sourceID, "", text, "")
 }
 
-// SetDocumentWithHash populates the i-th slot including DOCUMENT.hash.
-// Useful when the ingestion layer already computed a stable content hash.
+/* SetDocumentWithHash fills one slot and includes the content hash. */
 func (b *Batch) SetDocumentWithHash(i int, id, sourceID, text, hash string) {
+	b.SetDocumentWithLangAndHash(i, id, sourceID, "", text, hash)
+}
+
+/*
+SetDocumentWithLangAndHash fills one slot with all known input fields.
+This must happen before workers start. It is setup code, not a concurrent path.
+*/
+func (b *Batch) SetDocumentWithLangAndHash(i int, id, sourceID, language, text, hash string) {
 	b.IDs[i] = id
 	b.SourceIDs[i] = sourceID
+	b.Languages[i] = language
 	b.Hashes[i] = hash
 	b.Texts[i] = text
 	b.AnalysisRunIDs[i] = ""
 
-	// Ensure a clean slot in case the batch object is ever reused.
+	/* Reset the slot so batch reuse does not leak stale state. */
 	b.SentimentScores[i] = 0
 	b.SentimentLabels[i] = ""
 	b.Entities[i] = nil
@@ -150,23 +148,21 @@ func (b *Batch) SetDocumentWithHash(i int, id, sourceID, text, hash string) {
 	b.ProcessingMs[i] = 0
 	b.ProcessingErrors[i] = ""
 	b.startedAtUnixNano[i] = 0
-
 	b.Statuses[i] = StatusPending
 }
 
-// SetAnalysisRunID stores the ANALYSIS_RUN id for document i.
-//
-// Must be called before the Worker starts processing document i (single-writer
-// phase), or under external synchronization if invoked concurrently.
+/*
+SetAnalysisRunID assigns the logical run id for one document.
+Retries reuse the same run id, so this field is set outside the hot path.
+*/
 func (b *Batch) SetAnalysisRunID(i int, runID string) {
 	b.AnalysisRunIDs[i] = runID
 }
 
-
-// MarkProcessing marks document i as currently being processed.
-//
-// Workers should call this immediately before invoking the Python service.
-// This makes StatusProcessing meaningful and allows latency measurement.
+/*
+MarkProcessing moves a document into the processing state
+and records when work actually started.
+*/
 func (b *Batch) MarkProcessing(i int) {
 	now := time.Now().UTC()
 
@@ -177,37 +173,33 @@ func (b *Batch) MarkProcessing(i int) {
 	b.mu.Unlock()
 }
 
-// SetResult writes the inference result for document i.
-//
-// Safe to call concurrently from multiple Workers provided each Worker owns a
-// DISTINCT set of indices. Writing different indices of the same slice is safe
-// in Go (no false sharing at the language level). UpdatedAt is updated under
-// the write lock to avoid a data race on the shared timestamp field.
+/*
+SetResult stores the successful output for one document.
+Different workers may call this at the same time on different indices.
+*/
 func (b *Batch) SetResult(i int, score float32, label string, entities []Entity, summary string) {
-	// Copy entities defensively: the caller may reuse or mutate the input slice.
+	/* Clone entities so callers can safely reuse their input slice. */
 	clonedEntities := cloneEntities(entities)
 
-	// Write result fields first — visible to readers only after StatusDone is set.
+	/* Write payload first. Status is flipped only at the end. */
 	b.SentimentScores[i] = score
 	b.SentimentLabels[i] = label
 	b.Entities[i] = clonedEntities
 	b.Summaries[i] = summary
 	b.ProcessingErrors[i] = ""
 
-	started := b.startedAtUnixNano[i]
-	if started != 0 {
+	if started := b.startedAtUnixNano[i]; started != 0 {
 		b.ProcessingMs[i] = elapsedMillisSince(started)
 	}
 
-	// Acquire the lock only for the shared fields that require serialization:
-	// Statuses (memory-ordering guarantee for the status sentinel) and UpdatedAt.
+	/* Only shared state goes under the lock. */
 	b.mu.Lock()
 	b.Statuses[i] = StatusDone
 	b.UpdatedAt = time.Now().UTC()
 	b.mu.Unlock()
 }
 
-// SetError marks document i as failed. Thread-safe.
+/* SetError marks one document as failed and stores a stable error string. */
 func (b *Batch) SetError(i int, err error) {
 	now := time.Now().UTC()
 	msg := "unknown error"
@@ -215,8 +207,7 @@ func (b *Batch) SetError(i int, err error) {
 		msg = err.Error()
 	}
 
-	started := b.startedAtUnixNano[i]
-	if started != 0 {
+	if started := b.startedAtUnixNano[i]; started != 0 {
 		b.ProcessingMs[i] = elapsedMillisSince(started)
 	}
 
@@ -227,17 +218,14 @@ func (b *Batch) SetError(i int, err error) {
 	b.mu.Unlock()
 }
 
-// FailedIndices returns the indices of failed documents.
-// Used by the Orchestrator for retries.
-//
-// Must be called after all Workers have completed, or the caller must ensure
-// no concurrent writes to Statuses are in flight.
+/*
+FailedIndices returns the indices of documents that failed.
+The small capacity hint avoids growing the output slice in common cases.
+*/
 func (b *Batch) FailedIndices() []int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	// Capacity heuristic: expect at most 25% failures, minimum 1 to avoid
-	// zero-cap allocation on small batches (Size < 4).
 	capHint := b.Size / 4
 	if capHint == 0 && b.Size > 0 {
 		capHint = 1
@@ -252,8 +240,10 @@ func (b *Batch) FailedIndices() []int {
 	return failed
 }
 
-// IsDone reports whether all documents have reached a terminal state
-// (StatusDone or StatusFailed). Safe to poll concurrently.
+/*
+IsDone reports whether all documents reached a terminal state.
+It is safe to poll while workers are still running.
+*/
 func (b *Batch) IsDone() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -266,9 +256,10 @@ func (b *Batch) IsDone() bool {
 	return true
 }
 
-// TextsSlice returns only the texts of the specified indices,
-// without allocating a new complete Batch structure.
-// Useful for reprocessing only failed documents.
+/*
+TextsSlice returns the texts for the selected indices only.
+This is cheaper than building a new batch when retrying a subset.
+*/
 func (b *Batch) TextsSlice(indices []int) []string {
 	out := make([]string, len(indices))
 	for j, i := range indices {
@@ -277,20 +268,24 @@ func (b *Batch) TextsSlice(indices []int) []string {
 	return out
 }
 
-// cloneEntities copies the slice header and its Entity values.
-// Entity contains strings, which are immutable in Go, so copying the structs
-// is enough here and avoids aliasing the original []Entity backing array.
+/*
+cloneEntities copies the entity slice so callers and batch state
+do not share the same backing array.
+*/
 func cloneEntities(in []Entity) []Entity {
 	if len(in) == 0 {
 		return nil
 	}
+
 	out := make([]Entity, len(in))
 	copy(out, in)
 	return out
 }
 
-// elapsedMillisSince converts a start timestamp to milliseconds.
-// Saturates at MaxInt32 in the extremely unlikely event of a huge duration.
+/*
+elapsedMillisSince returns the elapsed time in milliseconds.
+Clamp to int32 bounds even if absurdly large durations ever happen.
+*/
 func elapsedMillisSince(startUnixNano int64) int32 {
 	elapsed := time.Since(time.Unix(0, startUnixNano)).Milliseconds()
 	if elapsed < 0 {
@@ -302,6 +297,10 @@ func elapsedMillisSince(startUnixNano int64) int32 {
 	return int32(elapsed)
 }
 
+/*
+ForceFail clears any successful-looking output and marks the slot as failed.
+This is mainly useful for failure injection in tests and demos.
+*/
 func (b *Batch) ForceFail(i int, err error) {
 	b.SentimentScores[i] = 0
 	b.SentimentLabels[i] = ""

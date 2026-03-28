@@ -14,11 +14,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+/* Store owns the database pool and persistence helpers. */
 type Store struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
 }
 
+/*
+NewStore builds the Postgres store and verifies connectivity early.
+Fail fast here so the rest of the system does not start half-alive.
+*/
 func NewStore(ctx context.Context, databaseURL string, logger *slog.Logger) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -41,12 +46,18 @@ func NewStore(ctx context.Context, databaseURL string, logger *slog.Logger) (*St
 	}, nil
 }
 
+/* Close releases the underlying connection pool. */
 func (s *Store) Close() {
 	if s.pool != nil {
 		s.pool.Close()
 	}
 }
 
+/*
+PersistBatch writes the whole batch in one transaction.
+The batch is the unit of persistence: either everything lands,
+or nothing does.
+*/
 func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -60,6 +71,10 @@ func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 		}
 	}()
 
+	/*
+	Resolve logical model names to real MODEL_VERSION rows first.
+	Every analysis_run needs stable foreign keys.
+	*/
 	sentimentModelID, err := s.upsertModelVersion(ctx, tx, batch.ModelVersions.SentimentModelID, "sentiment")
 	if err != nil {
 		return fmt.Errorf("upsert sentiment model: %w", err)
@@ -76,8 +91,16 @@ func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 	}
 
 	for i := 0; i < batch.Size; i++ {
+		/*
+			Normalize all ids before touching the database.
+			This lets the store accept either real UUIDs or stable logical ids.
+		*/
 		sourceUUID := normalizeUUID(batch.SourceIDs[i], "source:"+batch.SourceIDs[i])
 		documentUUID := normalizeUUID(batch.IDs[i], "document:"+batch.IDs[i])
+		analysisRunUUID := normalizeUUID(
+			batch.AnalysisRunIDs[i],
+			fmt.Sprintf("%s-run-%d", batch.ID, i),
+		)
 
 		if err := s.upsertSourceMetadata(ctx, tx, sourceUUID, batch.SourceIDs[i]); err != nil {
 			return fmt.Errorf("upsert source_metadata for doc %s: %w", batch.IDs[i], err)
@@ -94,6 +117,7 @@ func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 			tx,
 			batch,
 			i,
+			analysisRunUUID,
 			documentUUID,
 			sentimentModelID,
 			nerModelID,
@@ -101,11 +125,12 @@ func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 			startedAt,
 			completedAt,
 		); err != nil {
-			return fmt.Errorf("upsert analysis_run %s: %w", batch.AnalysisRunIDs[i], err)
+			return fmt.Errorf("upsert analysis_run %s: %w", analysisRunUUID, err)
 		}
 
+		/* analysis_result exists only for successful documents. */
 		if batch.Statuses[i] == StatusDone {
-			if err := s.upsertAnalysisResult(ctx, tx, batch, i); err != nil {
+			if err := s.upsertAnalysisResult(ctx, tx, batch, i, analysisRunUUID); err != nil {
 				return fmt.Errorf("upsert analysis_result for run %s: %w", batch.AnalysisRunIDs[i], err)
 			}
 		}
@@ -120,6 +145,11 @@ func (s *Store) PersistBatch(ctx context.Context, batch *Batch) error {
 	return nil
 }
 
+/*
+upsertSourceMetadata ensures the source row exists.
+For the prototype the source payload is synthetic but still normalized
+into a real relational table.
+*/
 func (s *Store) upsertSourceMetadata(ctx context.Context, tx pgxTx, sourceUUID uuid.UUID, rawSourceID string) error {
 	name := "source-" + sanitizeLabel(rawSourceID)
 
@@ -147,6 +177,10 @@ func (s *Store) upsertSourceMetadata(ctx context.Context, tx pgxTx, sourceUUID u
 	return err
 }
 
+/*
+upsertDocument writes the input document row.
+Optional fields are passed as NULL when the batch does not have them.
+*/
 func (s *Store) upsertDocument(
 	ctx context.Context,
 	tx pgxTx,
@@ -158,6 +192,11 @@ func (s *Store) upsertDocument(
 	var hashValue any
 	if strings.TrimSpace(batch.Hashes[i]) != "" {
 		hashValue = batch.Hashes[i]
+	}
+
+	var languageValue any
+	if strings.TrimSpace(batch.Languages[i]) != "" {
+		languageValue = batch.Languages[i]
 	}
 
 	_, err := tx.Exec(ctx, `
@@ -176,13 +215,14 @@ func (s *Store) upsertDocument(
 			source_id = EXCLUDED.source_id,
 			original_text = EXCLUDED.original_text,
 			hash = EXCLUDED.hash,
+			language = EXCLUDED.language,
 			status = EXCLUDED.status
 	`,
 		documentUUID,
 		sourceUUID,
 		batch.Texts[i],
 		hashValue,
-		nil,
+		languageValue,
 		statusString(batch.Statuses[i]),
 		batch.CreatedAt,
 	)
@@ -190,6 +230,11 @@ func (s *Store) upsertDocument(
 	return err
 }
 
+/*
+upsertModelVersion ensures a model row exists and returns its id.
+The NLP service gives logical model names. The store turns them
+into real foreign keys.
+*/
 func (s *Store) upsertModelVersion(ctx context.Context, tx pgxTx, modelName, taskType string) (uuid.UUID, error) {
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
@@ -226,17 +271,21 @@ func (s *Store) upsertModelVersion(ctx context.Context, tx pgxTx, modelName, tas
 	return id, nil
 }
 
+/*
+upsertAnalysisRun writes the execution metadata for one document.
+This row exists for both successful and failed runs.
+*/
 func (s *Store) upsertAnalysisRun(
 	ctx context.Context,
 	tx pgxTx,
 	batch *Batch,
 	i int,
+	analysisRunUUID uuid.UUID,
 	documentUUID uuid.UUID,
 	sentimentModelID uuid.UUID,
 	nerModelID uuid.UUID,
 	summaryModelID uuid.UUID,
-	startedAt *time.Time,
-	completedAt *time.Time,
+	startedAt, completedAt *time.Time,
 ) error {
 	var promptVersion any
 	if strings.TrimSpace(batch.PromptVersion) != "" {
@@ -276,7 +325,7 @@ func (s *Store) upsertAnalysisRun(
 			completed_at = EXCLUDED.completed_at,
 			error_message = EXCLUDED.error_message
 	`,
-		batch.AnalysisRunIDs[i],
+		analysisRunUUID,
 		documentUUID,
 		sentimentModelID,
 		nerModelID,
@@ -292,7 +341,17 @@ func (s *Store) upsertAnalysisRun(
 	return err
 }
 
-func (s *Store) upsertAnalysisResult(ctx context.Context, tx pgxTx, batch *Batch, i int) error {
+/*
+upsertAnalysisResult writes the successful output payload.
+Entities are stored as JSONB because they are naturally nested data.
+*/
+func (s *Store) upsertAnalysisResult(
+	ctx context.Context,
+	tx pgxTx,
+	batch *Batch,
+	i int,
+	analysisRunUUID uuid.UUID,
+) error {
 	entitiesJSON, err := json.Marshal(batch.Entities[i])
 	if err != nil {
 		return fmt.Errorf("marshal entities: %w", err)
@@ -321,7 +380,7 @@ func (s *Store) upsertAnalysisResult(ctx context.Context, tx pgxTx, batch *Batch
 			summary = EXCLUDED.summary,
 			processing_ms = EXCLUDED.processing_ms
 	`,
-		batch.AnalysisRunIDs[i],
+		analysisRunUUID,
 		batch.SentimentScores[i],
 		batch.SentimentLabels[i],
 		string(entitiesJSON),
@@ -332,11 +391,16 @@ func (s *Store) upsertAnalysisResult(ctx context.Context, tx pgxTx, batch *Batch
 	return err
 }
 
+/*
+pgxTx is the small transaction surface the store actually needs.
+A narrow interface keeps helpers easy to test and decoupled from pgx.Tx.
+*/
 type pgxTx interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+/* providerForTask maps a task to the provider used in this prototype. */
 func providerForTask(taskType string) string {
 	switch taskType {
 	case "summary":
@@ -346,6 +410,11 @@ func providerForTask(taskType string) string {
 	}
 }
 
+/*
+normalizeUUID turns either a real UUID or a logical id into a stable UUID.
+This is useful in a prototype where some inputs are symbolic ids
+instead of true database-native UUIDs.
+*/
 func normalizeUUID(raw string, fallbackSeed string) uuid.UUID {
 	raw = strings.TrimSpace(raw)
 	if raw != "" {
@@ -362,6 +431,11 @@ func normalizeUUID(raw string, fallbackSeed string) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(fallbackSeed))
 }
 
+/*
+sanitizeLabel keeps synthetic labels readable and bounded.
+This is not meant to be perfect slug logic, only good enough
+for internal prototype data.
+*/
 func sanitizeLabel(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -376,6 +450,10 @@ func sanitizeLabel(s string) string {
 	return s
 }
 
+/*
+batchTimestamps reconstructs run timestamps from in-memory batch timing data.
+If processing never started, there is nothing meaningful to persist.
+*/
 func batchTimestamps(batch *Batch, i int) (*time.Time, *time.Time) {
 	if i < 0 || i >= batch.Size {
 		return nil, nil
@@ -391,13 +469,18 @@ func batchTimestamps(batch *Batch, i int) (*time.Time, *time.Time) {
 	return &start, &end
 }
 
+/* BatchPersistenceStats is a small verification summary for one batch. */
 type BatchPersistenceStats struct {
-	RunsTotal   int
-	RunsDone    int
-	RunsFailed  int
+	RunsTotal    int
+	RunsDone     int
+	RunsFailed   int
 	ResultsTotal int
 }
 
+/*
+VerifyBatchPersistence checks that the expected rows really landed in Postgres.
+This is a cheap consistency check useful for the prototype and for demos.
+*/
 func (s *Store) VerifyBatchPersistence(ctx context.Context, batch *Batch) (BatchPersistenceStats, error) {
 	var stats BatchPersistenceStats
 
@@ -405,7 +488,13 @@ func (s *Store) VerifyBatchPersistence(ctx context.Context, batch *Batch) (Batch
 		return stats, nil
 	}
 
-	runIDs := append([]string(nil), batch.AnalysisRunIDs...)
+	runUUIDs := make([]uuid.UUID, 0, len(batch.AnalysisRunIDs))
+	for i, raw := range batch.AnalysisRunIDs {
+		runUUIDs = append(
+			runUUIDs,
+			normalizeUUID(raw, fmt.Sprintf("analysis-run:%s:%d", batch.ID, i)),
+		)
+	}
 
 	err := s.pool.QueryRow(ctx, `
 		SELECT
@@ -414,7 +503,7 @@ func (s *Store) VerifyBatchPersistence(ctx context.Context, batch *Batch) (Batch
 			COUNT(*) FILTER (WHERE run_status = 'failed')::int AS runs_failed
 		FROM analysis_run
 		WHERE id = ANY($1)
-	`, runIDs).Scan(
+	`, runUUIDs).Scan(
 		&stats.RunsTotal,
 		&stats.RunsDone,
 		&stats.RunsFailed,
@@ -427,7 +516,7 @@ func (s *Store) VerifyBatchPersistence(ctx context.Context, batch *Batch) (Batch
 		SELECT COUNT(*)::int
 		FROM analysis_result
 		WHERE analysis_run_id = ANY($1)
-	`, runIDs).Scan(&stats.ResultsTotal)
+	`, runUUIDs).Scan(&stats.ResultsTotal)
 	if err != nil {
 		return stats, fmt.Errorf("verify analysis_result stats: %w", err)
 	}

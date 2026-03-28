@@ -1,9 +1,8 @@
 """
-NLP inference service: sentiment (multilingual XLM-RoBERTa), NER (multilingual),
-conditional summarization (via OpenAI-compatible API) with structured JSON output.
+NLP inference.
 
-Dependencies:
-    pip install transformers torch accelerate openai python-dotenv pydantic
+It runs multilingual sentiment analysis and NER locally,
+then calls an OpenAI-compatible API for conditional summarization.
 """
 
 from __future__ import annotations
@@ -33,16 +32,17 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_SENTIMENT_MODEL = "cardiffnlp/twitter-xlm-roberta-base-sentiment-multilingual"
 DEFAULT_NER_MODEL = "Babelscape/wikineural-multilingual-ner"
 DEFAULT_LLM_MODEL = "llama-3.1-8b-instant"
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v1"
 
 DEFAULT_MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "4000"))
 DEFAULT_LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "20"))
 ENABLE_TORCH_COMPILE = os.getenv("ENABLE_TORCH_COMPILE", "false").lower() == "true"
 
 
-# Data structures
 @dataclass
 class Entity:
+    """A single named entity extracted from text."""
+
     text: str
     label: str
     start: int
@@ -52,16 +52,20 @@ class Entity:
 
 @dataclass
 class AnalysisResult:
+    """The final output for one document."""
+
     doc_id: str
-    sentiment_score: float = 0.0       # signed confidence in [-1.0, 1.0]
-    sentiment_label: str = "Neutral"   # Positive | Negative | Neutral
+    sentiment_score: float = 0.0
+    sentiment_label: str = "Neutral"
     entities: list[Entity] = field(default_factory=list)
-    summary: Optional[str] = None      # only if sentiment == Negative
+    summary: Optional[str] = None
     error: Optional[str] = None
 
 
 @dataclass
 class ModelVersionInfo:
+    """Model metadata returned with each batch."""
+
     sentiment_model: str
     ner_model: str
     summary_model: str
@@ -69,6 +73,8 @@ class ModelVersionInfo:
 
 
 class SummaryPayload(BaseModel):
+    """Strict schema expected from the LLM summary output."""
+
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(min_length=1, max_length=200)
@@ -77,6 +83,7 @@ class SummaryPayload(BaseModel):
 
 
 def normalize_text(text: str, max_chars: int = DEFAULT_MAX_TEXT_CHARS) -> str:
+    """Collapse whitespace and cap text length."""
     cleaned = " ".join((text or "").split())
     if len(cleaned) <= max_chars:
         return cleaned
@@ -84,6 +91,7 @@ def normalize_text(text: str, max_chars: int = DEFAULT_MAX_TEXT_CHARS) -> str:
 
 
 def merge_error(existing: Optional[str], new_error: Optional[str]) -> Optional[str]:
+    """Append a new error without losing the old one."""
     if not new_error:
         return existing
     if not existing:
@@ -91,13 +99,8 @@ def merge_error(existing: Optional[str], new_error: Optional[str]) -> Optional[s
     return f"{existing}; {new_error}"
 
 
-# Sentiment model with dynamic batching
-
 class SentimentAnalyzer:
-    """
-    Wraps XLM-RoBERTa for multilingual sentiment analysis.
-    Supports dynamic batching: groups texts by length (bucketing)
-    """
+    """Multilingual sentiment analyzer with length-aware batching."""
 
     def __init__(
         self,
@@ -112,7 +115,6 @@ class SentimentAnalyzer:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForSequenceClassification.from_pretrained(model_name)
 
-        # Use torch.compile only if explicitly enabled: safer for cold start / portability.
         if ENABLE_TORCH_COMPILE and hasattr(torch, "compile"):
             try:
                 model = torch.compile(model)
@@ -120,7 +122,6 @@ class SentimentAnalyzer:
             except Exception:
                 logger.exception("torch.compile failed, continuing without it.")
 
-        # HF pipeline
         self._pipe: Pipeline = pipeline(
             "text-classification",
             model=model,
@@ -132,10 +133,7 @@ class SentimentAnalyzer:
         logger.info("Sentiment model ready.")
 
     def _bucket_sort(self, texts: list[str]) -> list[tuple[int, str, int]]:
-        """
-        Sorts texts by approximate token count.
-        Returns a list of (original_index, text, token_len).
-        """
+        """Sort texts by approximate token length."""
         if not texts:
             return []
 
@@ -155,6 +153,7 @@ class SentimentAnalyzer:
         sorted_items: list[tuple[int, str, int]],
         max_batch_size: int,
     ) -> list[list[tuple[int, str, int]]]:
+        """Pack texts into batches by size and token budget."""
         batches: list[list[tuple[int, str, int]]] = []
         current: list[tuple[int, str, int]] = []
         current_tokens = 0
@@ -182,11 +181,7 @@ class SentimentAnalyzer:
         texts: list[str],
         batch_size: int = 32,
     ) -> tuple[list[Optional[dict]], list[Optional[str]]]:
-        """
-        Batch inference with length-aware dynamic batching.
-        Returns:
-            predictions in original order and optional per-document errors.
-        """
+        """Run sentiment inference and keep output order stable."""
         if not texts:
             return [], []
 
@@ -211,6 +206,7 @@ class SentimentAnalyzer:
                 for idx, pred in zip(chunk_indices, chunk_results):
                     predictions[idx] = pred
             except Exception as batch_exc:
+                # If the whole chunk fails, fall back to per-document inference.
                 logger.exception("Sentiment chunk failed, retrying per document: %s", batch_exc)
                 for idx, text, _ in batch:
                     try:
@@ -234,23 +230,17 @@ class SentimentAnalyzer:
         return predictions, errors
 
     def score_to_label(self, raw_label: str, score: float) -> tuple[str, float]:
-        """
-        Converts model output to normalized label and score in [-1, 1].
-        (HF score is the confidence of the predicted class)
-        """
-        l = (raw_label or "").lower()
-        if "neg" in l:
+        """Map the model output to the public label and signed score."""
+        label = (raw_label or "").lower()
+        if "neg" in label:
             return "Negative", -float(score)
-        if "pos" in l:
+        if "pos" in label:
             return "Positive", float(score)
         return "Neutral", 0.0
 
 
-# Named Entity Recognition
 class NERExtractor:
-    """
-    Extracts named entities with a multilingual NER model.
-    """
+    """Multilingual named entity extractor."""
 
     def __init__(
         self,
@@ -275,6 +265,7 @@ class NERExtractor:
         texts: list[str],
         batch_size: int = 32,
     ) -> tuple[list[list[Entity]], list[Optional[str]]]:
+        """Run batched NER and fall back to per-document retries on failure."""
         results: list[list[Entity]] = [[] for _ in texts]
         errors: list[Optional[str]] = [None] * len(texts)
 
@@ -308,11 +299,13 @@ class NERExtractor:
         return results, errors
 
     def _convert_entities(self, raw_entities: list[dict]) -> list[Entity]:
+        """Convert raw HF entities into the internal representation."""
         entities: list[Entity] = []
         for e in raw_entities:
             score = float(e.get("score", 0.0))
             if score < self.score_threshold:
                 continue
+
             entities.append(
                 Entity(
                     text=str(e.get("word", "")),
@@ -325,11 +318,8 @@ class NERExtractor:
         return entities
 
 
-# Summarizer with conditional logic (only for negative texts)
 class ConditionalSummarizer:
-    """
-    Generates a summary only if sentiment is Negative.
-    """
+    """Generate a summary only for negative texts."""
 
     MAX_CONCURRENT_REQUESTS = 10
 
@@ -380,7 +370,7 @@ Restituisci ESCLUSIVAMENTE un oggetto JSON con questa struttura:
         self._timeout_s = timeout_s
         self._max_text_chars = max_text_chars
 
-        # A maximum of max_concurrent coroutines access the API simultaneously. The others wait without blocking.
+        # Bound API concurrency without blocking the event loop.
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def summarize(
@@ -389,19 +379,15 @@ Restituisci ESCLUSIVAMENTE un oggetto JSON con questa struttura:
         entities: list[Entity],
         sentiment_label: str,
     ) -> tuple[Optional[str], Optional[str]]:
-        """
-        Generates the summary only if sentiment is Negative.
-        Returns:
-            (normalized_json_string, error_message)
-        """
+        """Summarize one text only if its sentiment is negative."""
         if sentiment_label != "Negative":
-            return None, None  # no API call for non-negative texts
+            return None, None
 
         safe_text = normalize_text(text, max_chars=self._max_text_chars)
         entity_str = ", ".join(f"{e.text} ({e.label})" for e in entities[:25]) or "nessuna"
         prompt = self._USER_PROMPT_TEMPLATE.format(text=safe_text, entities=entity_str)
 
-        async with self._semaphore:  # maximum MAX_CONCURRENT_REQUESTS at a time
+        async with self._semaphore:
             try:
                 response = await asyncio.wait_for(
                     self._client.chat.completions.create(
@@ -446,9 +432,7 @@ Restituisci ESCLUSIVAMENTE un oggetto JSON con questa struttura:
         entities_list: list[list[Entity]],
         labels: list[str],
     ) -> tuple[list[Optional[str]], list[Optional[str]]]:
-        """
-        Processes only negative texts in parallel.
-        """
+        """Run summaries in parallel only for negative texts."""
         summaries: list[Optional[str]] = [None] * len(texts)
         errors: list[Optional[str]] = [None] * len(texts)
 
@@ -468,11 +452,8 @@ Restituisci ESCLUSIVAMENTE un oggetto JSON con questa struttura:
         return summaries, errors
 
 
-# Final pipeline
 class NLPPipeline:
-    """
-    Coordinates sentiment, NER, and summarization in a single pipeline.
-    """
+    """Coordinate sentiment, NER, and conditional summarization."""
 
     def __init__(
         self,
@@ -490,10 +471,7 @@ class NLPPipeline:
         texts: list[str],
         batch_size: int = 32,
     ) -> tuple[list[AnalysisResult], ModelVersionInfo]:
-        """
-        Processes a full batch: sentiment → NER → conditional summarization.
-        Returns results in the same order as input.
-        """
+        """Process a full batch and preserve input order."""
         if len(doc_ids) != len(texts):
             raise ValueError("Mismatched doc_ids and texts")
         if not doc_ids:
@@ -508,7 +486,7 @@ class NLPPipeline:
         results = [AnalysisResult(doc_id=doc_id) for doc_id in doc_ids]
         logger.info("Processing %d documents.", n)
 
-        # Sentiment (blocking HF pipeline offloaded to a worker thread)
+        # HF pipelines are blocking, so run them off the event loop.
         raw_sentiments, sentiment_errors = await asyncio.to_thread(
             self.sentiment.predict_batch,
             prepared_texts,
@@ -524,12 +502,14 @@ class NLPPipeline:
                 )
                 continue
 
-            label, score = self.sentiment.score_to_label(raw.get("label", ""), float(raw.get("score", 0.0)))
+            label, score = self.sentiment.score_to_label(
+                raw.get("label", ""),
+                float(raw.get("score", 0.0)),
+            )
             labels[i] = label
             results[i].sentiment_label = label
             results[i].sentiment_score = score
 
-        # NER (blocking HF pipeline offloaded to a worker thread)
         entities_list, ner_errors = await asyncio.to_thread(
             self.ner.extract_batch,
             prepared_texts,
@@ -541,7 +521,6 @@ class NLPPipeline:
             if ner_errors[i]:
                 results[i].error = merge_error(results[i].error, f"ner_failed: {ner_errors[i]}")
 
-        # Conditional summarization (async, only negative texts)
         summaries, summary_errors = await self.summarizer.summarize_batch(
             prepared_texts,
             entities_list,
@@ -569,11 +548,8 @@ class NLPPipeline:
         )
 
 
-# ---------------------------------------------------------------------------
-# Test entry point
-# ---------------------------------------------------------------------------
-
 async def main():
+    """Small local test entry point."""
     pipeline_instance = NLPPipeline()
 
     sample_ids = ["doc-001", "doc-002", "doc-003"]

@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS model_version (
 );
 
 CREATE TABLE IF NOT EXISTS analysis_run (
-    id text PRIMARY KEY,
+    id uuid PRIMARY KEY,
     document_id uuid NOT NULL REFERENCES document(id),
     sentiment_model_id uuid REFERENCES model_version(id),
     ner_model_id uuid REFERENCES model_version(id),
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS analysis_run (
 
 CREATE TABLE IF NOT EXISTS analysis_result (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    analysis_run_id text NOT NULL UNIQUE REFERENCES analysis_run(id) ON DELETE CASCADE,
+    analysis_run_id uuid NOT NULL UNIQUE REFERENCES analysis_run(id) ON DELETE CASCADE,
     sentiment_score real NOT NULL,
     sentiment_label text NOT NULL,
     entities jsonb NOT NULL DEFAULT '[]'::jsonb,

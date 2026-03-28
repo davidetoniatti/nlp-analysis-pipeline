@@ -17,7 +17,8 @@ REQUEST_TIMEOUT_S = float(os.getenv("REQUEST_TIMEOUT_S", "120"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing NLP pipeline ...")
+    """Initialize the NLP pipeline once at startup."""
+    logger.info("Initializing NLP pipeline...")
     pipeline = NLPPipeline()
     app.state.pipeline = pipeline
     logger.info("NLP pipeline ready.")
@@ -32,6 +33,8 @@ app = FastAPI(title="NLP Inference API", lifespan=lifespan)
 
 
 class InferenceRequest(BaseModel):
+    """Request payload for batch inference."""
+
     model_config = ConfigDict(extra="forbid")
 
     doc_ids: list[str] = Field(min_length=1)
@@ -40,6 +43,8 @@ class InferenceRequest(BaseModel):
 
 
 class EntityResponse(BaseModel):
+    """Public API shape for one entity."""
+
     text: str
     label: str
     start: int
@@ -48,6 +53,8 @@ class EntityResponse(BaseModel):
 
 
 class DocResultResponse(BaseModel):
+    """Public API shape for one analyzed document."""
+
     doc_id: str
     sentiment_score: float
     sentiment_label: str
@@ -57,6 +64,8 @@ class DocResultResponse(BaseModel):
 
 
 class ModelVersionsResponse(BaseModel):
+    """Model metadata returned with the batch."""
+
     sentiment_model: str
     ner_model: str
     summary_model: str
@@ -64,12 +73,15 @@ class ModelVersionsResponse(BaseModel):
 
 
 class InferenceResponse(BaseModel):
+    """Full API response for one batch."""
+
     results: list[DocResultResponse]
     model_versions: ModelVersionsResponse
 
 
 @app.post("/analyze", response_model=InferenceResponse)
 async def analyze(req: InferenceRequest, request: Request):
+    """Validate input, run the pipeline, and shape the API response."""
     if len(req.doc_ids) != len(req.texts):
         raise HTTPException(status_code=400, detail="Mismatched doc_ids and texts")
 
@@ -84,6 +96,7 @@ async def analyze(req: InferenceRequest, request: Request):
         raise HTTPException(status_code=503, detail="Pipeline not ready")
 
     try:
+        # Bound the whole request so one slow batch does not hang forever.
         results, versions = await asyncio.wait_for(
             pipeline.process_batch(
                 req.doc_ids,
@@ -132,6 +145,7 @@ async def analyze(req: InferenceRequest, request: Request):
 
 @app.get("/health")
 async def health(request: Request):
+    """Report whether the pipeline is initialized and ready."""
     pipeline_ready = hasattr(request.app.state, "pipeline") and request.app.state.pipeline is not None
     if not pipeline_ready:
         raise HTTPException(status_code=503, detail="Pipeline not ready")
