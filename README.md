@@ -1,86 +1,82 @@
 # Scalable NLP Analysis Pipeline
 
+For each input document, the system:
+- collects the text (multilingual: Italian and English),
+- performs sentiment analysis,
+- extracts named entities (NER),
+- generates a summary (via LLM) only for texts with negative sentiment,
+- persistently saves runs and results in the database to ensure traceability and reproducibility.
 
-> [!IMPORTANT]
-> Lo svolgimento del task 4 si trova all'interno del file `analisi_predittiva.md`.
+## Architecture
 
-Per ogni documento in input, il sistema:
-- raccoglie il testo (multilingua: italiano e inglese),
-- esegue sentiment analysis,
-- estrae entità nominate (NER),
-- genera un riassunto (via LLM) solo per i testi con sentiment negativo,
-- salva in modo persistente run e risultati nel database per garantire tracciabilità e riproducibilità.
+- **Postgres**: saves documents, analysis runs, results, source metadata, and model versions (minimal model registry).
+- **Go Backend (Orchestrator)**: consumes messages from a mock queue, builds batches, calls the NLP service, manages retries with exponential backoff, and persists results while verifying their integrity.
+- **NLP Service (Python/FastAPI)**: exposes an HTTP API that performs sentiment analysis and NER locally (Transformers) and conditional summarization via Groq/LLM.
 
-## Architettura
+## Deployment and Startup
 
-- **Postgres**: salva documenti, analysis run, risultati, metadati della sorgente e versioni dei modelli (model registry minimale).
-- **Backend Go (Orchestratore)**: consuma messaggi da una coda mock, costruisce batch, chiama il servizio NLP, gestisce i retry con backoff esponenziale e persiste i risultati verificandone l'integrità.
-- **Servizio NLP (Python/FastAPI)**: espone un'API HTTP che esegue sentiment analysis e NER localmente (Transformers) e summarization condizionale tramite Groq/LLM.
-
-## Deploy e avvio
-
-### Requisiti
+### Requirements
 
 - Docker
 - Docker Compose
-- Una `GROQ_API_KEY` valida (opzionale, per la summarization)
+- A valid `GROQ_API_KEY` (optional, for summarization)
 
-### Avvio
+### Startup
 
 ```bash
 docker compose up --build
 ```
 
-### Configurazione
+### Configuration
 
-- `DATABASE_URL`: URL di connessione a Postgres per il backend Go.
-- `INFERENCE_URL`: Endpoint del servizio NLP (default: `http://ai_service:8080/analyze`).
-- `GROQ_API_KEY`: Chiave API per la summarization via LLM.
-- `FAIL_DOC_IDS`: Lista di ID documento (separati da virgola) per simulare fallimenti iniettati.
-- `FAIL_TEXT_CONTAINS`: Stringa che, se contenuta nel testo, attiva un fallimento simulato.
-- `REQUEST_TIMEOUT_S`: Timeout per le richieste al servizio NLP.
-- `LLM_TIMEOUT_S`: Timeout specifico per la chiamata all'LLM.
+- `DATABASE_URL`: Postgres connection URL for the Go backend.
+- `INFERENCE_URL`: NLP service endpoint (default: `http://ai_service:8080/analyze`).
+- `GROQ_API_KEY`: API key for summarization via LLM.
+- `FAIL_DOC_IDS`: List of document IDs (comma-separated) to simulate injected failures.
+- `FAIL_TEXT_CONTAINS`: String that, if contained in the text, triggers a simulated failure.
+- `REQUEST_TIMEOUT_S`: Timeout for requests to the NLP service.
+- `LLM_TIMEOUT_S`: Specific timeout for the LLM call.
 
-## Flusso dei dati
+## Data Flow
 
-1. Il backend Go carica i documenti mock da `test_data.json`.
-2. I documenti vengono raggruppati in batch in base alla dimensione o al tempo (flush interval).
-3. Il backend chiama l'endpoint `/analyze` del servizio Python.
-4. Il servizio NLP esegue:
-   - Sentiment analysis multilingua (XLMR-Roberta).
-   - NER multilingua (WikiNeural).
-   - Summarization condizionale (Llama 3 via Groq) solo per i testi negativi.
-5. Il backend riceve i risultati del batch e i metadati delle versioni dei modelli usati.
-6. I risultati vengono persistiti in Postgres all'interno di una singola transazione.
-7. La persistenza viene verificata interrogando il database prima di confermare (ack) il batch.
+1. The Go backend loads mock documents from `test_data.json`.
+2. Documents are grouped into batches based on size or time (flush interval).
+3. The backend calls the `/analyze` endpoint of the Python service.
+4. The NLP service performs:
+   - Multilingual sentiment analysis (XLMR-Roberta).
+   - Multilingual NER (WikiNeural).
+   - Conditional summarization (Llama 3 via Groq) only for negative texts.
+5. The backend receives the batch results and metadata for the model versions used.
+6. Results are persisted in Postgres within a single transaction.
+7. Persistence is verified by querying the database before acknowledging (ack) the batch.
 
-## Schema del database
+## Database Schema
 
-Il database è progettato per supportare la tracciabilità completa di ogni analisi.
+The database is designed to support full traceability of every analysis.
 
-Tabelle:
+Tables:
 
-- `source_metadata`: Informazioni sull'origine del documento.
-- `document`: Il documento grezzo ricevuto in ingresso.
-- `model_version`: Registro dei modelli usati (nome, versione, provider, hash del prompt).
-- `analysis_run`: Record di un'esecuzione di analisi, collegato al documento e ai modelli usati.
-- `analysis_result`: L'output strutturato (sentiment, entità, summary) di una run completata.
+- `source_metadata`: Information about the document's origin.
+- `document`: The raw input document received.
+- `model_version`: Registry of models used (name, version, provider, prompt hash).
+- `analysis_run`: Record of an analysis execution, linked to the document and models used.
+- `analysis_result`: The structured output (sentiment, entities, summary) of a completed run.
 
 
-## Design choices
+## Design Choices
 
-- **Batching**: Ottimizza il throughput e riduce il numero di chiamate di rete.
-- **Retry con backoff e jitter**: Gestisce errori transitori e backpressure (429) in modo resiliente.
-- **Tracciabilità dei modelli**: Ogni risultato è collegato a una `model_version` specifica, inclusi revisione del modello e hash del prompt.
+- **Batching**: Optimizes throughput and reduces the number of network calls.
+- **Retry with backoff and jitter**: Handles transient errors and backpressure (429) resiliently.
+- **Model Traceability**: Each result is linked to a specific `model_version`, including model revision and prompt hash.
 
-## Struttura del repository
+## Repository Structure
 
 ```text
 .
 ├── compose.yml
 ├── test_data.json
 ├── backend/
-│   ├── cmd/server/       # Entry point dell'applicazione
+│   ├── cmd/server/       # Application entry point
 │   ├── internal/pipeline/# batching, store, orchestrator
 │   ├── Dockerfile
 │   └── go.mod
@@ -93,7 +89,7 @@ Tabelle:
 
 ## API
 
-Il servizio NLP espone:
-- `POST /analyze`: Accetta batch di documenti e restituisce analisi e metadati dei modelli.
-- `GET /health`: Verifica la readiness del servizio e il caricamento dei modelli.
+The NLP service exposes:
+- `POST /analyze`: Accepts batches of documents and returns analysis and model metadata.
+- `GET /health`: Verifies service readiness and model loading.
 
